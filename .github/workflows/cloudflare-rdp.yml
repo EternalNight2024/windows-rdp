@@ -9,20 +9,6 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 0. 设置系统语言为中文
-        run: |
-          Write-Host "正在设置系统语言为中文..."
-          $langPack = Get-WindowsCapability -Online | Where-Object { $_.Name -like "Language.Basic~~~zh-CN*" -and $_.State -ne "Installed" }
-          if ($langPack) {
-              Add-WindowsCapability -Online -Name $langPack.Name
-          }
-          Set-WinSystemLocale -SystemLocale zh-CN
-          Set-WinUserLanguageList -LanguageList zh-CN -Force
-          Set-Culture -CultureInfo zh-CN
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language" -Name "InstallLanguage" -Value "0804"
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language" -Name "Default" -Value "0804"
-          Write-Host "系统语言已设置为中文" -ForegroundColor Green
-
       - name: 1. 启用远程桌面并放行防火墙
         run: |
           Write-Host "正在配置远程桌面..."
