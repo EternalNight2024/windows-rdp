@@ -27,31 +27,45 @@ jobs:
           CPOLAR_AUTH_TOKEN: ${{ secrets.CPOLAR_AUTH_TOKEN }}
         run: |
           Write-Host "正在下载并安装 cpolar..."
-          Invoke-WebRequest "https://www.cpolar.com/static/downloads/cpolar-installer-windows-amd64.exe" -OutFile "C:\cpolar-installer.exe"
-          Start-Process -FilePath "C:\cpolar-installer.exe" -ArgumentList "/S" -Wait
+          
+          # 1. 下载 zip 压缩包
+          $installerUrl = "https://www.cpolar.com/static/downloads/releases/3.3.12/cpolar-stable-windows-amd64-setup.zip"
+          $zipPath = "C:\cpolar.zip"
+          Invoke-WebRequest -Uri $installerUrl -OutFile $zipPath
+          
+          # 2. 解压到指定目录
+          $extractPath = "C:\cpolar_installer"
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          
+          # 3. 查找并运行解压后的 .exe 安装文件
+          $installerExe = Get-ChildItem -Path $extractPath -Filter "*.exe" | Select-Object -First 1
+          if ($installerExe) {
+              Write-Host "找到安装程序: $($installerExe.FullName)"
+              Start-Process -FilePath $installerExe.FullName -ArgumentList "/S" -Wait
+          } else {
+              Write-Host "错误: 在解压目录中未找到安装程序 (.exe 文件)" -ForegroundColor Red
+              exit 1
+          }
           
           Start-Sleep -Seconds 5
 
+          # 4. 配置 cpolar
           $env:Path += ";C:\Program Files\cpolar"
           Write-Host "正在使用认证密钥登录 cpolar..."
           & cpolar authtoken $Env:CPOLAR_AUTH_TOKEN
 
           Write-Host "正在启动 cpolar 服务并创建 RDP 的 TCP 隧道..."
-          # 安装 Windows 服务
           & cpolar service install 2>$null
           & cpolar service start 2>$null
 
-          # 启动 TCP 隧道：用 Start-Process 启动独立进程，-WindowStyle Hidden 隐藏窗口，-PassThru 获取进程对象
           Write-Host "正在启动 TCP 隧道 (本地端口 3389)..."
           $tunnelProcess = Start-Process -FilePath "cpolar" -ArgumentList "tcp 3389" -WindowStyle Hidden -PassThru
-          
-          # 将进程ID写入文件，便于后续检查
           $tunnelProcess.Id | Out-File -FilePath "C:\cpolar_tunnel_pid.txt"
 
           Write-Host "等待隧道建立 (约15秒)..."
           Start-Sleep -Seconds 15
 
-          # 通过 Web API 获取公网地址 (比解析输出更可靠)
+          # 5. 获取公网地址
           $tcp_address = "获取失败，请检查日志"
           try {
               $apiResponse = Invoke-RestMethod -Uri "http://localhost:9200/api/tunnels" -ErrorAction Stop
@@ -61,7 +75,6 @@ jobs:
               }
           } catch {
               Write-Host "通过 API 获取地址失败，尝试解析日志文件..." -ForegroundColor Yellow
-              # 备选方案：从日志文件解析
               $logFile = "$env:USERPROFILE\.cpolar\cpolar.log"
               if (Test-Path $logFile) {
                   $logContent = Get-Content $logFile -Tail 50
@@ -84,7 +97,6 @@ jobs:
           Write-Host "  >> 若地址显示为'获取失败'，请登录 http://localhost:9200 查看" -ForegroundColor Red
           Write-Host "==========================================" -ForegroundColor Green
 
-          # 输出进程信息便于调试
           Write-Host "隧道进程 PID: $($tunnelProcess.Id)" -ForegroundColor Gray
 
       - name: 4. 保持服务器运行（48小时）
