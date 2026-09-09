@@ -9,20 +9,38 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: 0. 设置系统语言为中文
+        run: |
+          Write-Host "正在设置系统语言为中文..."
+          $langPack = Get-WindowsCapability -Online | Where-Object { $_.Name -like "Language.Basic~~~zh-CN*" -and $_.State -ne "Installed" }
+          if ($langPack) {
+              Add-WindowsCapability -Online -Name $langPack.Name
+          }
+          Set-WinSystemLocale -SystemLocale zh-CN
+          Set-WinUserLanguageList -LanguageList zh-CN -Force
+          Set-Culture -CultureInfo zh-CN
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language" -Name "InstallLanguage" -Value "0804"
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language" -Name "Default" -Value "0804"
+          Write-Host "系统语言已设置为中文" -ForegroundColor Green
+
       - name: 1. 启用远程桌面并放行防火墙
         run: |
+          Write-Host "正在配置远程桌面..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+          Write-Host "远程桌面已启用，防火墙已放行" -ForegroundColor Green
 
       - name: 2. 创建管理员账户
         env:
           PASSWORD: ${{ secrets.PASSWORD }}
         run: |
+          Write-Host "正在创建管理员账户..."
           $Password = ConvertTo-SecureString "$env:PASSWORD" -AsPlainText -Force
           New-LocalUser -Name "RDPUser" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "RDPUser" -ErrorAction SilentlyContinue
           net user runneradmin "$env:PASSWORD"
+          Write-Host "管理员账户 RDPUser 已创建" -ForegroundColor Green
 
       - name: 3. 安装 Cloudflared 并建立隧道
         env:
@@ -31,7 +49,6 @@ jobs:
         run: |
           Write-Host "正在下载 cloudflared..."
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$env:USERPROFILE\cloudflared.exe"
-          
           $env:Path += ";$env:USERPROFILE"
           
           Write-Host "正在安装 Cloudflare Tunnel 服务..."
@@ -39,111 +56,29 @@ jobs:
           
           Write-Host "正在启动 Cloudflare Tunnel 服务..."
           Start-Service cloudflared
-          
-          Write-Host "等待服务稳定 (约15秒)..."
           Start-Sleep -Seconds 15
           
-          $serviceStatus = Get-Service cloudflared
-          Write-Host "当前服务状态: $($serviceStatus.Status)" -ForegroundColor Yellow
+          $svc = Get-Service cloudflared
+          if ($svc.Status -eq "Running") {
+              Write-Host "Cloudflare Tunnel 服务已启动" -ForegroundColor Green
+          } else {
+              Write-Host "警告: 服务状态为 $($svc.Status)" -ForegroundColor Yellow
+          }
           
           Write-Host ""
           Write-Host "==========================================" -ForegroundColor Green
-          Write-Host "  >>> RDP 远程桌面服务已就绪！ <<<" -ForegroundColor Cyan
-          Write-Host "  请登录 Cloudflare Zero Trust 面板查看隧道状态。" -ForegroundColor Yellow
-          Write-Host "  您的RDP连接地址为您在 Cloudflare 配置的域名。" -ForegroundColor Yellow
-          Write-Host "  例如: rdp.your-domain.com" -ForegroundColor Magenta
-          Write-Host "  用户名: RDPUser" -ForegroundColor Green
-          Write-Host "  密码: $env:PASSWORD" -ForegroundColor Green
+          Write-Host "  >>> RDP 服务已就绪 <<<" -ForegroundColor Cyan
+          Write-Host "  域名: r.styx.cc.cd" -ForegroundColor Yellow
+          Write-Host "  用户: RDPUser" -ForegroundColor Yellow
+          Write-Host "  密码: $env:PASSWORD" -ForegroundColor Yellow
           Write-Host "==========================================" -ForegroundColor Green
-
-      - name: 3.5 验证 RDP 服务与网络状态
-        run: |
-          Write-Host ""
-          Write-Host "========== 开始验证 RDP 服务状态 ==========" -ForegroundColor Cyan
-          
-          Write-Host "1. 检查远程桌面服务 (TermService) 状态..."
-          $termService = Get-Service -Name TermService
-          Write-Host "   服务状态: $($termService.Status)" -ForegroundColor Yellow
-          if ($termService.Status -ne 'Running') {
-              Write-Host "   警告: RDP 服务未运行！尝试启动..." -ForegroundColor Red
-              Start-Service -Name TermService
-              Start-Sleep -Seconds 3
-              $termService = Get-Service -Name TermService
-              Write-Host "   启动后状态: $($termService.Status)" -ForegroundColor Yellow
-          }
-          
-          Write-Host ""
-          Write-Host "2. 检查 3389 端口监听状态..."
-          $portCheck = netstat -an | Select-String ":3389"
-          if ($portCheck) {
-              Write-Host "   3389 端口监听状态:" -ForegroundColor Yellow
-              $portCheck | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-          } else {
-              Write-Host "   警告: 未找到 3389 端口的监听记录！" -ForegroundColor Red
-          }
-          
-          Write-Host ""
-          Write-Host "3. 检查远程桌面防火墙规则..."
-          $firewallRule = Get-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          if ($firewallRule) {
-              $enabledRules = $firewallRule | Where-Object { $_.Enabled -eq $True }
-              Write-Host "   已启用规则数: $($enabledRules.Count)" -ForegroundColor Yellow
-              $enabledRules | ForEach-Object { Write-Host "   - $($_.DisplayName)" -ForegroundColor Gray }
-          } else {
-              Write-Host "   警告: 未找到远程桌面防火墙规则！" -ForegroundColor Red
-          }
-          
-          Write-Host ""
-          Write-Host "4. 检查 Cloudflared 服务状态..."
-          $cfService = Get-Service -Name cloudflared -ErrorAction SilentlyContinue
-          if ($cfService) {
-              Write-Host "   服务状态: $($cfService.Status)" -ForegroundColor Yellow
-              if ($cfService.Status -ne 'Running') {
-                  Write-Host "   警告: Cloudflared 服务未运行！" -ForegroundColor Red
-              }
-          } else {
-              Write-Host "   警告: 未找到 cloudflared 服务！" -ForegroundColor Red
-          }
-          
-          Write-Host ""
-          Write-Host "5. 检查 Cloudflare 隧道连接状态 (通过本地 API)..."
-          try {
-              # cloudflared 服务默认在 57875 端口提供管理 API
-              $apiResponse = Invoke-RestMethod -Uri "http://localhost:57875/api/quicktunnels" -ErrorAction Stop
-              Write-Host "   隧道连接: 正常" -ForegroundColor Green
-              Write-Host "   活跃隧道数: $($apiResponse.Count)" -ForegroundColor Yellow
-          } catch {
-              Write-Host "   警告: 无法访问本地管理 API，可能端口不同或服务未完全就绪" -ForegroundColor Yellow
-              Write-Host "   但服务状态为 Running，隧道大概率正常工作" -ForegroundColor Gray
-          }
-          
-          Write-Host ""
-          Write-Host "6. 确认 RDP 服务可被本地访问..."
-          try {
-              $testConnection = Test-NetConnection -ComputerName localhost -Port 3389 -ErrorAction Stop
-              if ($testConnection.TcpTestSucceeded) {
-                  Write-Host "   localhost:3389 可访问: 是" -ForegroundColor Green
-              } else {
-                  Write-Host "   localhost:3389 可访问: 否" -ForegroundColor Red
-              }
-          } catch {
-              Write-Host "   localhost:3389 可访问: 无法测试" -ForegroundColor Yellow
-          }
-          
-          Write-Host ""
-          Write-Host "========== 验证完成 ==========" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "📌 如果所有检查项都显示正常，但 RDP 仍无法连接：" -ForegroundColor Yellow
-          Write-Host "   1. 请确认 Cloudflare 控制台中，域名 r.styx.cc.cd 的" -ForegroundColor Gray
-          Write-Host "      Service 类型为 RDP，URL 为 localhost:3389" -ForegroundColor Gray
-          Write-Host "   2. 尝试在本地浏览器访问 https://r.styx.cc.cd" -ForegroundColor Gray
-          Write-Host "      看是否返回 Cloudflare 的 502/520 错误页面" -ForegroundColor Gray
-          Write-Host "   3. 如果返回错误页面，说明域名已正确指向隧道" -ForegroundColor Gray
-          Write-Host "      问题可能在于 RDP 协议转发，而非域名解析" -ForegroundColor Gray
 
       - name: 4. 保持服务器运行 (48小时)
         run: |
+          Write-Host "开始保活，服务器将运行 48 小时" -ForegroundColor Cyan
           for ($i = 1; $i -le 2880; $i++) {
               Start-Sleep -Seconds 60
-              Write-Host "[$i/2880] 服务器持续运行中... (隧道服务状态: $(Get-Service cloudflared -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status))"
+              if ($i % 60 -eq 0) {
+                  Write-Host "[$i/2880] 已运行 $([math]::Round($i/60, 1)) 小时"
+              }
           }
