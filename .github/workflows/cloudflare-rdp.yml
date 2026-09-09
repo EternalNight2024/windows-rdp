@@ -16,20 +16,22 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
       - name: 2. 创建管理员账户
+        env:
+          PASSWORD: ${{ secrets.PASSWORD }}
         run: |
-          $Password = ConvertTo-SecureString "YourStrongPassword123!" -AsPlainText -Force
+          $Password = ConvertTo-SecureString "$env:PASSWORD" -AsPlainText -Force
           New-LocalUser -Name "RDPUser" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Administrators" -Member "RDPUser" -ErrorAction SilentlyContinue
-          net user runneradmin YourStrongPassword123!
+          net user runneradmin "$env:PASSWORD"
 
       - name: 3. 安装 Cloudflared 并建立隧道
         env:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          PASSWORD: ${{ secrets.PASSWORD }}
         run: |
           Write-Host "正在下载 cloudflared..."
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$env:USERPROFILE\cloudflared.exe"
           
-          # 将 cloudflared.exe 所在目录添加到 PATH
           $env:Path += ";$env:USERPROFILE"
           
           Write-Host "正在安装 Cloudflare Tunnel 服务..."
@@ -41,7 +43,6 @@ jobs:
           Write-Host "等待服务稳定 (约15秒)..."
           Start-Sleep -Seconds 15
           
-          # 检查服务状态
           $serviceStatus = Get-Service cloudflared
           Write-Host "当前服务状态: $($serviceStatus.Status)" -ForegroundColor Yellow
           
@@ -52,7 +53,7 @@ jobs:
           Write-Host "  您的RDP连接地址为您在 Cloudflare 配置的域名。" -ForegroundColor Yellow
           Write-Host "  例如: rdp.your-domain.com" -ForegroundColor Magenta
           Write-Host "  用户名: RDPUser" -ForegroundColor Green
-          Write-Host "  密码: YourStrongPassword123!" -ForegroundColor Green
+          Write-Host "  密码: $env:PASSWORD" -ForegroundColor Green
           Write-Host "==========================================" -ForegroundColor Green
 
       - name: 4. 保持服务器运行 (48小时)
