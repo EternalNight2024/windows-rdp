@@ -37,20 +37,36 @@ jobs:
           $extractPath = "C:\cpolar_installer"
           Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
           
-          # 3. 查找并运行解压后的 .exe 安装文件
-          $installerExe = Get-ChildItem -Path $extractPath -Filter "*.exe" | Select-Object -First 1
-          if ($installerExe) {
-              Write-Host "找到安装程序: $($installerExe.FullName)"
-              Start-Process -FilePath $installerExe.FullName -ArgumentList "/S" -Wait
+          # 3. 查找 .msi 安装包并静默安装
+          $installerMsi = Get-ChildItem -Path $extractPath -Filter "*.msi" | Select-Object -First 1
+          if ($installerMsi) {
+              Write-Host "找到安装包: $($installerMsi.FullName)"
+              # 使用 msiexec 静默安装，/i 表示安装，/quiet 表示静默模式，/norestart 表示不重启
+              Start-Process -FilePath "msiexec" -ArgumentList "/i `"$($installerMsi.FullName)`" /quiet /norestart" -Wait
+              Write-Host "cpolar 安装完成 (静默模式)"
           } else {
-              Write-Host "错误: 在解压目录中未找到安装程序 (.exe 文件)" -ForegroundColor Red
+              Write-Host "错误: 在解压目录中未找到 .msi 安装包" -ForegroundColor Red
               exit 1
           }
           
           Start-Sleep -Seconds 5
 
-          # 4. 配置 cpolar
-          $env:Path += ";C:\Program Files\cpolar"
+          # 4. 将 cpolar 安装目录添加到 PATH
+          # cpolar 默认安装路径通常是 C:\Program Files\cpolar
+          $cpolarPath = "C:\Program Files\cpolar"
+          if (Test-Path $cpolarPath) {
+              $env:Path += ";$cpolarPath"
+          } else {
+              # 如果默认路径不存在，尝试在 Program Files (x86) 中查找
+              $cpolarPath = "C:\Program Files (x86)\cpolar"
+              if (Test-Path $cpolarPath) {
+                  $env:Path += ";$cpolarPath"
+              } else {
+                  Write-Host "错误: 未找到 cpolar 安装目录" -ForegroundColor Red
+                  exit 1
+              }
+          }
+
           Write-Host "正在使用认证密钥登录 cpolar..."
           & cpolar authtoken $Env:CPOLAR_AUTH_TOKEN
 
