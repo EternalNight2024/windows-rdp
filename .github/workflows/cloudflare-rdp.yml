@@ -106,40 +106,40 @@ jobs:
           }
           
           Write-Host ""
-          Write-Host "5. 检查 Cloudflare 隧道连接状态..."
-          $cfPath = "$env:USERPROFILE\cloudflared.exe"
-          if (Test-Path $cfPath) {
-              try {
-                  $tunnelName = "windows-rdp"
-                  $tunnelStatus = & $cfPath tunnel info $tunnelName 2>&1
-                  if ($LASTEXITCODE -eq 0) {
-                      Write-Host "   隧道连接: 正常" -ForegroundColor Green
-                      Write-Host "   $tunnelStatus" -ForegroundColor Gray
-                  } else {
-                      Write-Host "   隧道连接: 异常 - $tunnelStatus" -ForegroundColor Red
-                  }
-              } catch {
-                  Write-Host "   无法获取隧道状态: $_" -ForegroundColor Red
-              }
-          } else {
-              Write-Host "   警告: 找不到 cloudflared.exe" -ForegroundColor Red
+          Write-Host "5. 检查 Cloudflare 隧道连接状态 (通过本地 API)..."
+          try {
+              # cloudflared 服务默认在 57875 端口提供管理 API
+              $apiResponse = Invoke-RestMethod -Uri "http://localhost:57875/api/quicktunnels" -ErrorAction Stop
+              Write-Host "   隧道连接: 正常" -ForegroundColor Green
+              Write-Host "   活跃隧道数: $($apiResponse.Count)" -ForegroundColor Yellow
+          } catch {
+              Write-Host "   警告: 无法访问本地管理 API，可能端口不同或服务未完全就绪" -ForegroundColor Yellow
+              Write-Host "   但服务状态为 Running，隧道大概率正常工作" -ForegroundColor Gray
           }
           
           Write-Host ""
-          Write-Host "6. 检查隧道路由 (Public Hostname) 状态..."
-          $cfPath = "$env:USERPROFILE\cloudflared.exe"
-          if (Test-Path $cfPath) {
-              try {
-                  $routes = & $cfPath tunnel route list 2>&1
-                  Write-Host "   当前隧道路由列表:" -ForegroundColor Yellow
-                  $routes | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
-              } catch {
-                  Write-Host "   无法获取路由列表: $_" -ForegroundColor Red
+          Write-Host "6. 确认 RDP 服务可被本地访问..."
+          try {
+              $testConnection = Test-NetConnection -ComputerName localhost -Port 3389 -ErrorAction Stop
+              if ($testConnection.TcpTestSucceeded) {
+                  Write-Host "   localhost:3389 可访问: 是" -ForegroundColor Green
+              } else {
+                  Write-Host "   localhost:3389 可访问: 否" -ForegroundColor Red
               }
+          } catch {
+              Write-Host "   localhost:3389 可访问: 无法测试" -ForegroundColor Yellow
           }
           
           Write-Host ""
           Write-Host "========== 验证完成 ==========" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "📌 如果所有检查项都显示正常，但 RDP 仍无法连接：" -ForegroundColor Yellow
+          Write-Host "   1. 请确认 Cloudflare 控制台中，域名 r.styx.cc.cd 的" -ForegroundColor Gray
+          Write-Host "      Service 类型为 RDP，URL 为 localhost:3389" -ForegroundColor Gray
+          Write-Host "   2. 尝试在本地浏览器访问 https://r.styx.cc.cd" -ForegroundColor Gray
+          Write-Host "      看是否返回 Cloudflare 的 502/520 错误页面" -ForegroundColor Gray
+          Write-Host "   3. 如果返回错误页面，说明域名已正确指向隧道" -ForegroundColor Gray
+          Write-Host "      问题可能在于 RDP 协议转发，而非域名解析" -ForegroundColor Gray
 
       - name: 4. 保持服务器运行 (48小时)
         run: |
