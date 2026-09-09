@@ -1,0 +1,95 @@
+name: Windows Cloud RDP with cpolar
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. 启用远程桌面与防火墙放行
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+
+      - name: 2. 创建管理员账户
+        run: |
+          $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
+          New-LocalUser -Name "NvdAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
+          net user runneradmin P@ssw0rd1qazXSW@#
+
+      - name: 3. 安装并连接 cpolar 内网穿透
+        env:
+          CPOLAR_AUTH_TOKEN: ${{ secrets.CPOLAR_AUTH_TOKEN }}
+        run: |
+          Write-Host "正在下载并安装 cpolar..."
+          Invoke-WebRequest "https://www.cpolar.com/static/downloads/cpolar-installer-windows-amd64.exe" -OutFile "C:\cpolar-installer.exe"
+          Start-Process -FilePath "C:\cpolar-installer.exe" -ArgumentList "/S" -Wait
+          
+          Start-Sleep -Seconds 5
+
+          $env:Path += ";C:\Program Files\cpolar"
+          Write-Host "正在使用认证密钥登录 cpolar..."
+          & cpolar authtoken $Env:CPOLAR_AUTH_TOKEN
+
+          Write-Host "正在启动 cpolar 服务并创建 RDP 的 TCP 隧道..."
+          # 安装 Windows 服务
+          & cpolar service install 2>$null
+          & cpolar service start 2>$null
+
+          # 启动 TCP 隧道：用 Start-Process 启动独立进程，-WindowStyle Hidden 隐藏窗口，-PassThru 获取进程对象
+          Write-Host "正在启动 TCP 隧道 (本地端口 3389)..."
+          $tunnelProcess = Start-Process -FilePath "cpolar" -ArgumentList "tcp 3389" -WindowStyle Hidden -PassThru
+          
+          # 将进程ID写入文件，便于后续检查
+          $tunnelProcess.Id | Out-File -FilePath "C:\cpolar_tunnel_pid.txt"
+
+          Write-Host "等待隧道建立 (约15秒)..."
+          Start-Sleep -Seconds 15
+
+          # 通过 Web API 获取公网地址 (比解析输出更可靠)
+          $tcp_address = "获取失败，请检查日志"
+          try {
+              $apiResponse = Invoke-RestMethod -Uri "http://localhost:9200/api/tunnels" -ErrorAction Stop
+              $tcpTunnel = $apiResponse.tunnels | Where-Object { $_.proto -eq "tcp" -and $_.config.in_addr -eq "localhost:3389" }
+              if ($tcpTunnel) {
+                  $tcp_address = $tcpTunnel.public_url -replace "^tcp://", ""
+              }
+          } catch {
+              Write-Host "通过 API 获取地址失败，尝试解析日志文件..." -ForegroundColor Yellow
+              # 备选方案：从日志文件解析
+              $logFile = "$env:USERPROFILE\.cpolar\cpolar.log"
+              if (Test-Path $logFile) {
+                  $logContent = Get-Content $logFile -Tail 50
+                  foreach ($line in $logContent) {
+                      if ($line -match "(\d+\.tcp\.vip\.cpolar\.cn:\d+)") {
+                          $tcp_address = $matches[1]
+                          break
+                      }
+                  }
+              }
+          }
+
+          Write-Host ""
+          Write-Host "==========================================" -ForegroundColor Green
+          Write-Host "  >>> RDP 远程桌面服务已就绪！ <<<" -ForegroundColor Cyan
+          Write-Host "  cpolar 公网地址 : $tcp_address" -ForegroundColor Yellow
+          Write-Host "  用户名          : NvdAdmin" -ForegroundColor Yellow
+          Write-Host "  密码            : P@ssw0rd1qazXSW@#" -ForegroundColor Yellow
+          Write-Host "  >> 打开远程桌面客户端 (mstsc) 连接上述地址" -ForegroundColor Magenta
+          Write-Host "  >> 若地址显示为'获取失败'，请登录 http://localhost:9200 查看" -ForegroundColor Red
+          Write-Host "==========================================" -ForegroundColor Green
+
+          # 输出进程信息便于调试
+          Write-Host "隧道进程 PID: $($tunnelProcess.Id)" -ForegroundColor Gray
+
+      - name: 4. 保持服务器运行（48小时）
+        run: |
+          for ($i = 1; $i -le 2880; $i++) {
+              Start-Sleep -Seconds 60
+              Write-Host "[$i/2880] 服务器持续运行中..."
+          }
