@@ -1,0 +1,63 @@
+name: Windows RDP with Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. 启用远程桌面并放行防火墙
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+
+      - name: 2. 创建管理员账户
+        run: |
+          $Password = ConvertTo-SecureString "YourStrongPassword123!" -AsPlainText -Force
+          New-LocalUser -Name "RDPUser" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "RDPUser" -ErrorAction SilentlyContinue
+          net user runneradmin YourStrongPassword123!
+
+      - name: 3. 安装 Cloudflared 并建立隧道
+        env:
+          CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+        run: |
+          Write-Host "正在下载 cloudflared..."
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$env:USERPROFILE\cloudflared.exe"
+          
+          # 将 cloudflared.exe 所在目录添加到 PATH
+          $env:Path += ";$env:USERPROFILE"
+          
+          Write-Host "正在安装 Cloudflare Tunnel 服务..."
+          & "$env:USERPROFILE\cloudflared.exe" service install $Env:CLOUDFLARE_TOKEN
+          
+          Write-Host "正在启动 Cloudflare Tunnel 服务..."
+          Start-Service cloudflared
+          
+          Write-Host "等待服务稳定 (约15秒)..."
+          Start-Sleep -Seconds 15
+          
+          # 检查服务状态
+          $serviceStatus = Get-Service cloudflared
+          Write-Host "当前服务状态: $($serviceStatus.Status)" -ForegroundColor Yellow
+          
+          Write-Host ""
+          Write-Host "==========================================" -ForegroundColor Green
+          Write-Host "  >>> RDP 远程桌面服务已就绪！ <<<" -ForegroundColor Cyan
+          Write-Host "  请登录 Cloudflare Zero Trust 面板查看隧道状态。" -ForegroundColor Yellow
+          Write-Host "  您的RDP连接地址为您在 Cloudflare 配置的域名。" -ForegroundColor Yellow
+          Write-Host "  例如: rdp.your-domain.com" -ForegroundColor Magenta
+          Write-Host "  用户名: RDPUser" -ForegroundColor Green
+          Write-Host "  密码: YourStrongPassword123!" -ForegroundColor Green
+          Write-Host "==========================================" -ForegroundColor Green
+
+      - name: 4. 保持服务器运行 (48小时)
+        run: |
+          for ($i = 1; $i -le 2880; $i++) {
+              Start-Sleep -Seconds 60
+              Write-Host "[$i/2880] 服务器持续运行中... (隧道服务状态: $(Get-Service cloudflared -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Status))"
+          }
