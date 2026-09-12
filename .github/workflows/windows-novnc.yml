@@ -1,0 +1,105 @@
+name: Windows noVNC with Cloudflare Tunnel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      # 1. 创建管理员账户
+      - name: 1. 创建管理员账户
+        env:
+          PASSWORD: ${{ secrets.PASSWORD }}
+        run: |
+          $Password = ConvertTo-SecureString "$env:PASSWORD" -AsPlainText -Force
+          New-LocalUser -Name "RDPUser" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "RDPUser" -ErrorAction SilentlyContinue
+          net user runneradmin "$env:PASSWORD"
+
+      # 2. 安装 TightVNC Server（静默安装为服务）
+      - name: 2. 安装 TightVNC Server
+        env:
+          PASSWORD: ${{ secrets.PASSWORD }}
+        run: |
+          Write-Host "正在下载 TightVNC..."
+          Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.81/tightvnc-2.8.81-gpl-setup-64bit.msi" -OutFile "$env:TEMP\tightvnc.msi"
+          
+          Write-Host "正在静默安装 TightVNC..."
+          # TightVNC 密码最长 8 位，需注意[citation:22]
+          $VncPassword = $env:PASSWORD.Substring(0, [Math]::Min(8, $env:PASSWORD.Length))
+          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\tightvnc.msi`" /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_START_AS_SERVICE=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=$VncPassword" -Wait
+          Start-Sleep -Seconds 5
+          
+          $vncService = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
+          if ($vncService) {
+              if ($vncService.Status -ne 'Running') { Start-Service -Name "tvnserver" }
+              Write-Host "VNC 服务状态: $((Get-Service tvnserver).Status)" -ForegroundColor Green
+          } else {
+              Write-Host "警告: 未找到 tvnserver 服务" -ForegroundColor Yellow
+          }
+          
+          New-NetFirewallRule -DisplayName "VNC Server" -Direction Inbound -Protocol TCP -LocalPort 5900 -Action Allow -ErrorAction SilentlyContinue
+
+      # 3. 安装 Python 和 websockify
+      - name: 3. 安装 Python 和 websockify
+        run: |
+          Write-Host "正在安装 Python..."
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe" -OutFile "$env:TEMP\python_installer.exe"
+          Start-Process -FilePath "$env:TEMP\python_installer.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
+          Start-Sleep -Seconds 10
+          
+          # 刷新 PATH
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          Write-Host "正在安装 websockify..."
+          & python -m pip install websockify --quiet
+
+      # 4. 下载并启动 noVNC
+      - name: 4. 下载并启动 noVNC
+        run: |
+          $novncPath = "C:\noVNC"
+          New-Item -ItemType Directory -Path $novncPath -Force | Out-Null
+          
+          Write-Host "正在下载 noVNC..."
+          Invoke-WebRequest -Uri "https://github.com/novnc/noVNC/archive/refs/tags/v1.5.0.zip" -OutFile "$env:TEMP\novnc.zip"
+          Expand-Archive -Path "$env:TEMP\novnc.zip" -DestinationPath "$env:TEMP\novnc_extract" -Force
+          Copy-Item -Path "$env:TEMP\novnc_extract\noVNC-1.5.0\*" -Destination $novncPath -Recurse -Force
+          
+          Write-Host "正在启动 websockify..."
+          # websockify 将 6080 端口转发到本地 VNC 5900[citation:7]
+          Start-Process -FilePath "python" -ArgumentList "-m websockify --web `"$novncPath`" 6080 localhost:5900" -WindowStyle Hidden
+          Start-Sleep -Seconds 10
+          
+          $portCheck = netstat -an | Select-String ":6080"
+          if ($portCheck) { Write-Host "noVNC 已启动，监听 6080" -ForegroundColor Green }
+          else { Write-Host "警告: 6080 端口未监听" -ForegroundColor Yellow }
+          
+          New-NetFirewallRule -DisplayName "noVNC Web" -Direction Inbound -Protocol TCP -LocalPort 6080 -Action Allow -ErrorAction SilentlyContinue
+
+      # 5. 安装 Cloudflared 并建立隧道
+      - name: 5. 安装 Cloudflared 并建立隧道
+        env:
+          CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+        run: |
+          Write-Host "正在下载 cloudflared..."
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$env:USERPROFILE\cloudflared.exe"
+          $env:Path += ";$env:USERPROFILE"
+          
+          & "$env:USERPROFILE\cloudflared.exe" service install $Env:CLOUDFLARE_TOKEN
+          Start-Service cloudflared
+          Start-Sleep -Seconds 15
+          
+          $svc = Get-Service cloudflared
+          Write-Host "Cloudflare Tunnel 服务状态: $($svc.Status)" -ForegroundColor Green
+
+      # 6. 保持运行
+      - name: 6. 保持服务器运行 (48小时)
+        run: |
+          Write-Host "服务器持续运行中..."
+          for ($i = 1; $i -le 2880; $i++) {
+              Start-Sleep -Seconds 60
+              if ($i % 60 -eq 0) { Write-Host "[$i/2880] 已运行 $([math]::Round($i/60, 1)) 小时" }
+          }
