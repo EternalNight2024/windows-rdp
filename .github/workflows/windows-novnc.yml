@@ -19,7 +19,7 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDPUser" -ErrorAction SilentlyContinue
           net user runneradmin "$env:PASSWORD"
 
-      # 2. 安装 TightVNC Server（静默安装为服务）
+      # 2. 安装 TightVNC Server（静默安装为服务 + 启用回环连接）
       - name: 2. 安装 TightVNC Server
         env:
           PASSWORD: ${{ secrets.PASSWORD }}
@@ -28,20 +28,38 @@ jobs:
           Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.81/tightvnc-2.8.81-gpl-setup-64bit.msi" -OutFile "$env:TEMP\tightvnc.msi"
           
           Write-Host "正在静默安装 TightVNC..."
-          # TightVNC 密码最长 8 位，需注意[citation:22]
+          # TightVNC 密码最长 8 位
           $VncPassword = $env:PASSWORD.Substring(0, [Math]::Min(8, $env:PASSWORD.Length))
           Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\tightvnc.msi`" /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_START_AS_SERVICE=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=$VncPassword" -Wait
           Start-Sleep -Seconds 5
           
+          # 启用回环连接（关键修复）
+          Write-Host "正在启用 VNC 回环连接..."
+          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
+          if (Test-Path $regPath) {
+              Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Type DWord
+              Set-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -Type DWord
+              Write-Host "回环连接已启用" -ForegroundColor Green
+          } else {
+              Write-Host "警告: 未找到 TightVNC 注册表项，尝试创建..."
+              New-Item -Path $regPath -Force | Out-Null
+              Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Type DWord
+              Set-ItemProperty -Path $regPath -Name "LoopbackOnly" -Value 0 -Type DWord
+          }
+          
+          # 重启 VNC 服务使配置生效
+          Restart-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          
           $vncService = Get-Service -Name "tvnserver" -ErrorAction SilentlyContinue
           if ($vncService) {
-              if ($vncService.Status -ne 'Running') { Start-Service -Name "tvnserver" }
-              Write-Host "VNC 服务状态: $((Get-Service tvnserver).Status)" -ForegroundColor Green
+              Write-Host "VNC 服务状态: $($vncService.Status)" -ForegroundColor Green
           } else {
               Write-Host "警告: 未找到 tvnserver 服务" -ForegroundColor Yellow
           }
           
           New-NetFirewallRule -DisplayName "VNC Server" -Direction Inbound -Protocol TCP -LocalPort 5900 -Action Allow -ErrorAction SilentlyContinue
+          Write-Host "VNC 端口 5900 已放行" -ForegroundColor Green
 
       # 3. 安装 Python 和 websockify
       - name: 3. 安装 Python 和 websockify
@@ -56,6 +74,7 @@ jobs:
           
           Write-Host "正在安装 websockify..."
           & python -m pip install websockify --quiet
+          Write-Host "websockify 安装完成" -ForegroundColor Green
 
       # 4. 下载并启动 noVNC
       - name: 4. 下载并启动 noVNC
@@ -69,13 +88,15 @@ jobs:
           Copy-Item -Path "$env:TEMP\novnc_extract\noVNC-1.5.0\*" -Destination $novncPath -Recurse -Force
           
           Write-Host "正在启动 websockify..."
-          # websockify 将 6080 端口转发到本地 VNC 5900[citation:7]
           Start-Process -FilePath "python" -ArgumentList "-m websockify --web `"$novncPath`" 6080 localhost:5900" -WindowStyle Hidden
           Start-Sleep -Seconds 10
           
           $portCheck = netstat -an | Select-String ":6080"
-          if ($portCheck) { Write-Host "noVNC 已启动，监听 6080" -ForegroundColor Green }
-          else { Write-Host "警告: 6080 端口未监听" -ForegroundColor Yellow }
+          if ($portCheck) { 
+              Write-Host "noVNC 已启动，监听 6080" -ForegroundColor Green 
+          } else { 
+              Write-Host "警告: 6080 端口未监听" -ForegroundColor Yellow 
+          }
           
           New-NetFirewallRule -DisplayName "noVNC Web" -Direction Inbound -Protocol TCP -LocalPort 6080 -Action Allow -ErrorAction SilentlyContinue
 
@@ -94,12 +115,21 @@ jobs:
           
           $svc = Get-Service cloudflared
           Write-Host "Cloudflare Tunnel 服务状态: $($svc.Status)" -ForegroundColor Green
+          
+          Write-Host ""
+          Write-Host "==========================================" -ForegroundColor Green
+          Write-Host "  >>> noVNC 服务已就绪 <<<" -ForegroundColor Cyan
+          Write-Host "  请在浏览器中访问: https://novnc.styx.cc.cd" -ForegroundColor Yellow
+          Write-Host "  VNC 密码: $env:PASSWORD (前8位)" -ForegroundColor Yellow
+          Write-Host "==========================================" -ForegroundColor Green
 
       # 6. 保持运行
       - name: 6. 保持服务器运行 (48小时)
         run: |
-          Write-Host "服务器持续运行中..."
+          Write-Host "服务器持续运行中..." -ForegroundColor Cyan
           for ($i = 1; $i -le 2880; $i++) {
               Start-Sleep -Seconds 60
-              if ($i % 60 -eq 0) { Write-Host "[$i/2880] 已运行 $([math]::Round($i/60, 1)) 小时" }
+              if ($i % 60 -eq 0) { 
+                  Write-Host "[$i/2880] 已运行 $([math]::Round($i/60, 1)) 小时" 
+              }
           }
