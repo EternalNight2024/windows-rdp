@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      # 1. 设置 WARP（宿主机级别）
+      # 1. 设置 WARP（宿主机级别，自动配置 Docker 走 WARP）
       - name: 设置 WARP 并配置 Docker
         uses: viperadnan-git/setup-warp@v1
         with:
@@ -20,20 +20,20 @@ jobs:
       # 2. 验证 WARP 是否生效
       - name: 验证 WARP 连接
         run: |
-          echo "=== 检查 WARP 状态 ==="
+          echo "=== 宿主机 WARP 状态 ==="
           curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
 
-      # 3. 启动 webtop 容器（明确监听 6080，适配 --network host）
+      # 3. 启动 webtop 容器（不要手动加 --network host 和 -p）
       - name: 启动 webtop 容器
         run: |
           docker pull ghcr.io/linuxserver/webtop:ubuntu-xfce
 
-          # --network host 下，容器端口即宿主机端口
-          # 通过 CUSTOM_PORT 让 webtop 直接监听 6080，避免默认 3000 端口冲突
+          # 注意：setup-warp 会自动注入 --network host
+          # 手动加 --network host 会报 "network host is specified multiple times"
+          # --network host 下端口映射 -p 无效，靠 CUSTOM_PORT 让 webtop 直接监听宿主机端口
           docker run -d \
             --name=webtop \
             --shm-size=1gb \
-            --network host \
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Asia/Shanghai \
@@ -57,10 +57,10 @@ jobs:
       # 4. 验证容器内 WARP 生效
       - name: 验证容器内 WARP 生效
         run: |
-          echo "=== 容器内检查 WARP ==="
+          echo "=== 容器内 WARP 状态 ==="
           docker exec webtop curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
 
-      # 5. 本地验证 6080 端口可访问（关键排错步骤）
+      # 5. 本地验证 6080 端口可访问
       - name: 本地验证 6080 端口
         run: |
           echo "=== 本地测试 6080 端口 ==="
