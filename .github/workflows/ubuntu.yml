@@ -1,4 +1,4 @@
-name: Ubuntu Webtop with WARP (Canada) + Cloudflare Tunnel
+name: Ubuntu Webtop with WARP + Cloudflare Tunnel
 
 on:
   workflow_dispatch:
@@ -17,17 +17,9 @@ jobs:
           stack: dual
           configure_docker: true
 
-      # 2. 切换 WARP 出口为加拿大节点（单条命令）
-      - name: 切换 WARP 出口为加拿大节点
+      # 2. 验证 WARP 状态
+      - name: 验证 WARP 状态
         run: |
-          # 设置多伦多端点并重连
-          sudo warp-cli --accept-tos tunnel endpoint set 162.159.193.20:2408
-          sudo warp-cli --accept-tos disconnect
-          sleep 2
-          sudo warp-cli --accept-tos connect
-          sleep 8
-          
-          # 验证出口
           curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|loc=|warp="
 
       # 3. 启动 webtop 容器
@@ -35,7 +27,6 @@ jobs:
         run: |
           docker pull ghcr.io/linuxserver/webtop:ubuntu-xfce
 
-          # setup-warp 会自动注入 --network host，不要手动再加
           docker run -d \
             --name=webtop \
             --shm-size=1gb \
@@ -45,23 +36,23 @@ jobs:
             ghcr.io/linuxserver/webtop:ubuntu-xfce
 
           echo "等待 webtop 启动..."
-          sleep 30
+          sleep 20
 
-          echo "=== 检查实际监听端口 ==="
-          ss -tlnp | grep -E ":3000|:6080" || echo "未找到 webtop 监听端口"
+          echo "=== 实际监听端口 ==="
+          ss -tlnp | grep -E ":3000|:6080" || echo "未找到监听端口"
 
       # 4. 验证容器内 WARP 出口
       - name: 验证容器内 WARP 出口
+        continue-on-error: true
         run: |
-          echo "=== 容器内 WARP 状态 ==="
           docker exec webtop sh -c "curl -s https://cloudflare.com/cdn-cgi/trace | grep -E 'ip=|loc=|warp='" 2>/dev/null || \
           docker exec webtop sh -c "wget -qO- https://cloudflare.com/cdn-cgi/trace | grep -E 'ip=|loc=|warp='" 2>/dev/null || \
           echo "容器内无法验证"
 
       # 5. 本地验证端口
       - name: 本地验证端口
+        continue-on-error: true
         run: |
-          echo "=== 本地测试端口 ==="
           for port in 3000 6080; do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$port 2>/dev/null || echo "000")
             echo "端口 $port: HTTP $code"
@@ -76,29 +67,26 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-          echo "正在启动 Cloudflare Tunnel..."
           sudo nohup cloudflared tunnel --no-autoupdate run --token $CLOUDFLARE_TOKEN > /tmp/cloudflared.log 2>&1 &
-          sleep 20
+          sleep 15
 
           if pgrep -f "cloudflared tunnel" > /dev/null; then
             echo "✅ Cloudflare Tunnel 已在后台运行"
-            tail -10 /tmp/cloudflared.log
           else
-            echo "⚠️ cloudflared 未运行，查看日志："
+            echo "⚠️ cloudflared 未运行"
             cat /tmp/cloudflared.log
             exit 1
           fi
 
           echo ""
           echo "=========================================="
-          echo "  >>> Webtop + WARP (加拿大) 服务已就绪 <<<"
+          echo "  >>> Webtop + WARP 服务已就绪 <<<"
           echo "  请确保 Cloudflare 路由指向实际监听端口"
           echo "=========================================="
 
       # 7. 保持运行 (48小时)
       - name: 保持运行 (48小时)
         run: |
-          echo "服务器持续运行中..."
           for i in $(seq 1 2880); do
             sleep 60
             if [ $((i % 60)) -eq 0 ]; then
