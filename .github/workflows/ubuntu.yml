@@ -1,4 +1,4 @@
-name: Ubuntu Webtop with WARP + Cloudflare Tunnel
+name: Ubuntu Webtop with WARP (Japan) + Cloudflare Tunnel
 
 on:
   workflow_dispatch:
@@ -17,57 +17,64 @@ jobs:
           stack: dual
           configure_docker: true
 
-      # 2. 验证 WARP 是否生效
+      # 2. 将 WARP 出口切换为日本东京节点
+      - name: 切换 WARP 出口为日本节点
+        run: |
+          echo "=== 设置东京端点 ==="
+          sudo warp-cli --accept-tos set-custom-endpoint 162.159.193.10:2408
+
+          echo "=== 重连使配置生效 ==="
+          sudo warp-cli --accept-tos disconnect
+          sleep 3
+          sudo warp-cli --accept-tos connect
+          sleep 10
+
+          echo "=== 验证出口位置 ==="
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|loc=|warp="
+
+      # 3. 验证宿主机 WARP 状态
       - name: 验证 WARP 连接
         run: |
           echo "=== 宿主机 WARP 状态 ==="
-          curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
-          echo "=== Cloudflare 连通性 ==="
-          curl -s -o /dev/null -w "HTTP 状态码: %{http_code}\n" https://cloudflare.com
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "warp|loc="
 
-      # 3. 启动 webtop 容器
+      # 4. 启动 webtop 容器
       - name: 启动 webtop 容器
         run: |
           docker pull ghcr.io/linuxserver/webtop:ubuntu-xfce
 
           # setup-warp 会自动注入 --network host，不要手动再加
-          # host 模式下端口映射无效，靠 CUSTOM_PORT 让 webtop 直接监听宿主机端口
           docker run -d \
             --name=webtop \
             --shm-size=1gb \
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Asia/Shanghai \
-            -e CUSTOM_PORT=6080 \
             ghcr.io/linuxserver/webtop:ubuntu-xfce
 
           echo "等待 webtop 启动..."
           sleep 30
 
           echo "=== 检查实际监听端口 ==="
-          ss -tlnp | grep -E ":6080|:3000" || echo "未找到监听端口"
+          ss -tlnp | grep -E ":3000|:6080" || echo "未找到 webtop 监听端口"
 
-          if ss -tlnp | grep -q ":6080"; then
-            echo "✅ webtop 已启动，监听 6080 端口"
-          else
-            echo "⚠️ 6080 端口未监听，查看日志："
-            docker logs webtop --tail 50
-            exit 1
-          fi
-
-      # 4. 验证容器内 WARP 生效
-      - name: 验证容器内 WARP 生效
+      # 5. 验证容器内 WARP 出口是否为日本
+      - name: 验证容器内 WARP 出口
         run: |
           echo "=== 容器内 WARP 状态 ==="
-          docker exec webtop curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
+          docker exec webtop sh -c "curl -s https://cloudflare.com/cdn-cgi/trace | grep -E 'ip=|loc=|warp='" || \
+          docker exec webtop sh -c "wget -qO- https://cloudflare.com/cdn-cgi/trace | grep -E 'ip=|loc=|warp='"
 
-      # 5. 本地验证 6080 端口可访问
-      - name: 本地验证 6080 端口
+      # 6. 本地验证 6080 端口可访问
+      - name: 本地验证端口
         run: |
-          echo "=== 本地测试 6080 端口 ==="
-          curl -s -o /dev/null -w "HTTP 状态码: %{http_code}\n" http://localhost:6080 || echo "本地访问 6080 失败"
+          echo "=== 本地测试端口 ==="
+          for port in 3000 6080; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$port 2>/dev/null || echo "000")
+            echo "端口 $port: HTTP $code"
+          done
 
-      # 6. 安装 Cloudflared 并建立隧道（使用 nohup 绕过 systemd）
+      # 7. 安装 Cloudflared 并建立隧道
       - name: 安装 Cloudflared 并建立隧道
         env:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
@@ -82,7 +89,6 @@ jobs:
 
           if pgrep -f "cloudflared tunnel" > /dev/null; then
             echo "✅ Cloudflare Tunnel 已在后台运行"
-            echo "=== 隧道日志 ==="
             tail -10 /tmp/cloudflared.log
           else
             echo "⚠️ cloudflared 未运行，查看日志："
@@ -92,11 +98,11 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "  >>> Webtop + WARP 服务已就绪 <<<"
-          echo "  请确保 Cloudflare 路由指向 http://localhost:6080"
+          echo "  >>> Webtop + WARP (日本) 服务已就绪 <<<"
+          echo "  请确保 Cloudflare 路由指向实际监听端口"
           echo "=========================================="
 
-      # 7. 保持运行
+      # 8. 保持运行 (48小时)
       - name: 保持运行 (48小时)
         run: |
           echo "服务器持续运行中..."
