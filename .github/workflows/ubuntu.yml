@@ -22,15 +22,16 @@ jobs:
         run: |
           echo "=== 宿主机 WARP 状态 ==="
           curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
+          echo "=== Cloudflare 连通性 ==="
+          curl -s -o /dev/null -w "HTTP 状态码: %{http_code}\n" https://cloudflare.com
 
-      # 3. 启动 webtop 容器（不要手动加 --network host 和 -p）
+      # 3. 启动 webtop 容器
       - name: 启动 webtop 容器
         run: |
           docker pull ghcr.io/linuxserver/webtop:ubuntu-xfce
 
-          # 注意：setup-warp 会自动注入 --network host
-          # 手动加 --network host 会报 "network host is specified multiple times"
-          # --network host 下端口映射 -p 无效，靠 CUSTOM_PORT 让 webtop 直接监听宿主机端口
+          # setup-warp 会自动注入 --network host，不要手动再加
+          # host 模式下端口映射无效，靠 CUSTOM_PORT 让 webtop 直接监听宿主机端口
           docker run -d \
             --name=webtop \
             --shm-size=1gb \
@@ -66,7 +67,7 @@ jobs:
           echo "=== 本地测试 6080 端口 ==="
           curl -s -o /dev/null -w "HTTP 状态码: %{http_code}\n" http://localhost:6080 || echo "本地访问 6080 失败"
 
-      # 6. 安装 Cloudflared 并建立隧道
+      # 6. 安装 Cloudflared 并建立隧道（使用 nohup 绕过 systemd）
       - name: 安装 Cloudflared 并建立隧道
         env:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
@@ -75,15 +76,18 @@ jobs:
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
 
-          sudo cloudflared service install $CLOUDFLARE_TOKEN
-          sudo systemctl start cloudflared
-          sleep 15
+          echo "正在启动 Cloudflare Tunnel..."
+          sudo nohup cloudflared tunnel --no-autoupdate run --token $CLOUDFLARE_TOKEN > /tmp/cloudflared.log 2>&1 &
+          sleep 20
 
-          if systemctl is-active --quiet cloudflared; then
-            echo "✅ Cloudflare Tunnel 已启动"
+          if pgrep -f "cloudflared tunnel" > /dev/null; then
+            echo "✅ Cloudflare Tunnel 已在后台运行"
+            echo "=== 隧道日志 ==="
+            tail -10 /tmp/cloudflared.log
           else
-            echo "⚠️ Cloudflare Tunnel 未启动"
-            sudo systemctl status cloudflared --no-pager
+            echo "⚠️ cloudflared 未运行，查看日志："
+            cat /tmp/cloudflared.log
+            exit 1
           fi
 
           echo ""
