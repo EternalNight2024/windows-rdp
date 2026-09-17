@@ -13,49 +13,60 @@ jobs:
       - name: 设置 WARP 并配置 Docker
         uses: viperadnan-git/setup-warp@v1
         with:
-          mode: client          # 使用官方 WARP 客户端，每次运行重新注册，更可靠
-          stack: dual           # 双栈 IPv4 + IPv6
-          configure_docker: true # 关键：自动配置 Docker 流量经过 WARP
+          mode: client
+          stack: dual
+          configure_docker: true
 
       # 2. 验证 WARP 是否生效
       - name: 验证 WARP 连接
         run: |
           echo "=== 检查 WARP 状态 ==="
           curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
-          # 应该输出 warp=on
 
-      # 3. 启动 webtop 容器
+      # 3. 启动 webtop 容器（明确监听 6080，适配 --network host）
       - name: 启动 webtop 容器
         run: |
           docker pull ghcr.io/linuxserver/webtop:ubuntu-xfce
-          
+
+          # --network host 下，容器端口即宿主机端口
+          # 通过 CUSTOM_PORT 让 webtop 直接监听 6080，避免默认 3000 端口冲突
           docker run -d \
             --name=webtop \
             --shm-size=1gb \
-            -p 6080:3000 \
+            --network host \
             -e PUID=1000 \
             -e PGID=1000 \
             -e TZ=Asia/Shanghai \
+            -e CUSTOM_PORT=6080 \
             ghcr.io/linuxserver/webtop:ubuntu-xfce
-          
+
           echo "等待 webtop 启动..."
           sleep 30
-          
+
+          echo "=== 检查实际监听端口 ==="
+          ss -tlnp | grep -E ":6080|:3000" || echo "未找到监听端口"
+
           if ss -tlnp | grep -q ":6080"; then
             echo "✅ webtop 已启动，监听 6080 端口"
           else
             echo "⚠️ 6080 端口未监听，查看日志："
             docker logs webtop --tail 50
+            exit 1
           fi
 
-      # 4. 验证容器流量是否走 WARP
+      # 4. 验证容器内 WARP 生效
       - name: 验证容器内 WARP 生效
         run: |
           echo "=== 容器内检查 WARP ==="
           docker exec webtop curl -s https://cloudflare.com/cdn-cgi/trace | grep warp
-          # 应该输出 warp=on
 
-      # 5. 安装 Cloudflared 并建立隧道
+      # 5. 本地验证 6080 端口可访问（关键排错步骤）
+      - name: 本地验证 6080 端口
+        run: |
+          echo "=== 本地测试 6080 端口 ==="
+          curl -s -o /dev/null -w "HTTP 状态码: %{http_code}\n" http://localhost:6080 || echo "本地访问 6080 失败"
+
+      # 6. 安装 Cloudflared 并建立隧道
       - name: 安装 Cloudflared 并建立隧道
         env:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
@@ -63,26 +74,25 @@ jobs:
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
           chmod +x cloudflared
           sudo mv cloudflared /usr/local/bin/
-          
+
           sudo cloudflared service install $CLOUDFLARE_TOKEN
           sudo systemctl start cloudflared
           sleep 15
-          
+
           if systemctl is-active --quiet cloudflared; then
             echo "✅ Cloudflare Tunnel 已启动"
           else
             echo "⚠️ Cloudflare Tunnel 未启动"
             sudo systemctl status cloudflared --no-pager
           fi
-          
+
           echo ""
           echo "=========================================="
           echo "  >>> Webtop + WARP 服务已就绪 <<<"
-          echo "  请在浏览器中访问你配置的域名"
-          echo "  Cloudflare 路由需指向 http://localhost:6080"
+          echo "  请确保 Cloudflare 路由指向 http://localhost:6080"
           echo "=========================================="
 
-      # 6. 保持运行
+      # 7. 保持运行
       - name: 保持运行 (48小时)
         run: |
           echo "服务器持续运行中..."
