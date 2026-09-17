@@ -1,4 +1,4 @@
-name: Ubuntu Webtop with WARP (Japan) + Cloudflare Tunnel
+name: Ubuntu Webtop with WARP (Canada) + Cloudflare Tunnel
 
 on:
   workflow_dispatch:
@@ -17,55 +17,20 @@ jobs:
           stack: dual
           configure_docker: true
 
-      # 2. 尝试切换 WARP 出口为日本节点（多种方式优雅降级）
-      - name: 切换 WARP 出口为日本节点
+      # 2. 切换 WARP 出口为加拿大节点（单条命令）
+      - name: 切换 WARP 出口为加拿大节点
         run: |
-          TOKYO_ENDPOINT="162.159.193.10:2408"
+          # 设置多伦多端点并重连
+          sudo warp-cli --accept-tos tunnel endpoint set 162.159.193.20:2408
+          sudo warp-cli --accept-tos disconnect
+          sleep 2
+          sudo warp-cli --accept-tos connect
+          sleep 8
+          
+          # 验证出口
+          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|loc=|warp="
 
-          echo "=== 当前 warp-cli 支持的子命令 ==="
-          warp-cli --help 2>&1 | head -40 || true
-
-          echo ""
-          echo "=== 尝试方式 1: tunnel endpoint set ==="
-          if sudo warp-cli --accept-tos tunnel endpoint set "$TOKYO_ENDPOINT" 2>/dev/null; then
-            echo "✅ 方式 1 成功"
-          else
-            echo "⚠️ 方式 1 不可用，尝试方式 2"
-            echo ""
-            echo "=== 尝试方式 2: set-custom-endpoint ==="
-            if sudo warp-cli --accept-tos set-custom-endpoint "$TOKYO_ENDPOINT" 2>/dev/null; then
-              echo "✅ 方式 2 成功"
-            else
-              echo "⚠️ 方式 2 不可用，尝试方式 3"
-              echo ""
-              echo "=== 尝试方式 3: 环境变量 + 重装 ==="
-              # 部分版本通过配置文件设置端点
-              sudo mkdir -p /etc/cloudflare-warp 2>/dev/null || true
-              sudo tee /etc/cloudflare-warp/endpoint.conf > /dev/null <<EOF
-          endpoint = $TOKYO_ENDPOINT
-          EOF
-              echo "已写入配置文件（如果该版本支持）"
-            fi
-          fi
-
-          echo ""
-          echo "=== 重连使配置生效 ==="
-          sudo warp-cli --accept-tos disconnect 2>/dev/null || true
-          sleep 3
-          sudo warp-cli --accept-tos connect 2>/dev/null || true
-          sleep 10
-
-          echo ""
-          echo "=== 验证出口位置 ==="
-          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "ip=|loc=|warp=" || echo "验证失败"
-
-      # 3. 验证宿主机 WARP 状态
-      - name: 验证 WARP 连接
-        run: |
-          echo "=== 宿主机 WARP 状态 ==="
-          curl -s https://cloudflare.com/cdn-cgi/trace | grep -E "warp|loc=|ip="
-
-      # 4. 启动 webtop 容器
+      # 3. 启动 webtop 容器
       - name: 启动 webtop 容器
         run: |
           docker pull ghcr.io/linuxserver/webtop:ubuntu-xfce
@@ -85,15 +50,15 @@ jobs:
           echo "=== 检查实际监听端口 ==="
           ss -tlnp | grep -E ":3000|:6080" || echo "未找到 webtop 监听端口"
 
-      # 5. 验证容器内 WARP 出口
+      # 4. 验证容器内 WARP 出口
       - name: 验证容器内 WARP 出口
         run: |
           echo "=== 容器内 WARP 状态 ==="
           docker exec webtop sh -c "curl -s https://cloudflare.com/cdn-cgi/trace | grep -E 'ip=|loc=|warp='" 2>/dev/null || \
           docker exec webtop sh -c "wget -qO- https://cloudflare.com/cdn-cgi/trace | grep -E 'ip=|loc=|warp='" 2>/dev/null || \
-          echo "容器内无法验证（可能缺少 curl/wget）"
+          echo "容器内无法验证"
 
-      # 6. 本地验证端口
+      # 5. 本地验证端口
       - name: 本地验证端口
         run: |
           echo "=== 本地测试端口 ==="
@@ -102,7 +67,7 @@ jobs:
             echo "端口 $port: HTTP $code"
           done
 
-      # 7. 安装 Cloudflared 并建立隧道
+      # 6. 安装 Cloudflared 并建立隧道
       - name: 安装 Cloudflared 并建立隧道
         env:
           CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
@@ -126,11 +91,11 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "  >>> Webtop + WARP 服务已就绪 <<<"
+          echo "  >>> Webtop + WARP (加拿大) 服务已就绪 <<<"
           echo "  请确保 Cloudflare 路由指向实际监听端口"
           echo "=========================================="
 
-      # 8. 保持运行 (48小时)
+      # 7. 保持运行 (48小时)
       - name: 保持运行 (48小时)
         run: |
           echo "服务器持续运行中..."
